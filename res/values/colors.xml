@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="jf_background">#101418</color>
+    <color name="jf_primary">#00A4DC</color>
+    <color name="jf_primary_dark">#0079A8</color>
+    <color name="jf_text">#FFFFFF</color>
+    <color name="jf_text_secondary">#A0A8B0</color>
+    <color name="jf_card">#1C232B</color>
+    <color name="jf_focus">#00A4DC</color>
+</resources>

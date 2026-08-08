@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Jellyfin TV</string>
+    <string name="login_title">Jellyfin TV 盒子版</string>
+    <string name="server_url">服务器地址</string>
+    <string name="username">用户名</string>
+    <string name="password">密码</string>
+    <string name="btn_login">连接服务器</string>
+    <string name="btn_logout">断开连接</string>
+    <string name="btn_refresh">刷新</string>
+    <string name="login_failed">登录失败，请检查服务器地址和账号密码</string>
+    <string name="loading">加载中…</string>
+    <string name="no_items">暂无内容</string>
+    <string name="select_library">选择媒体库</string>
+    <string name="error_network">网络错误，请检查连接</string>
+    <string name="movies">电影</string>
+    <string name="tv_shows">节目</string>
+</resources>

@@ -40,20 +40,33 @@
         android:textColor="#FF4444"
         android:visibility="gone" />
 
-    <Button
-        android:id="@+id/qualityButton"
+    <!-- 画质切换提示：居中显示 "已切换：流畅模式" 几秒后消失 -->
+    <TextView
+        android:id="@+id/qualityToast"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerInParent="true"
+        android:padding="16dp"
+        android:textSize="22sp"
+        android:textColor="#FFFFFF"
+        android:background="#CC00A4DC"
+        android:shadowColor="#000000"
+        android:shadowRadius="4.0"
+        android:visibility="gone" />
+
+    <!-- 底部提示：告诉用户按 INFO 键切换画质 -->
+    <TextView
+        android:id="@+id/hintText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_alignParentBottom="true"
-        android:layout_alignParentRight="true"
-        android:layout_margin="16dp"
-        android:text="原画"
+        android:layout_centerHorizontal="true"
+        android:layout_marginBottom="16dp"
+        android:text="按 INFO 键切换画质"
         android:textSize="12sp"
-        android:textColor="#FFFFFF"
-        android:background="@drawable/btn_half"
-        android:paddingLeft="12dp"
-        android:paddingRight="12dp"
-        android:focusable="true"
+        android:textColor="#88FFFFFF"
+        android:shadowColor="#000000"
+        android:shadowRadius="4.0"
         android:visibility="gone" />
 
 </RelativeLayout>

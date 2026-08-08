@@ -7,7 +7,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.view.KeyEvent;
 import android.view.View;
-import android.widget.Button;
 import android.widget.MediaController;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -15,7 +14,7 @@ import android.widget.VideoView;
 
 /**
  * Video player with local proxy for HTTPS compatibility and
- * quality switching for slow networks.
+ * quality switching (INFO key on TV remote) for slow networks.
  */
 public class PlayerActivity extends Activity {
 
@@ -23,7 +22,8 @@ public class PlayerActivity extends Activity {
     private ProgressBar bufferingBar;
     private TextView errorText;
     private TextView playerTitle;
-    private Button qualityButton;
+    private TextView qualityToast;
+    private TextView hintText;
     private JellyfinClient client;
     private StreamingProxy proxy;
     private Handler handler = new Handler();
@@ -41,7 +41,8 @@ public class PlayerActivity extends Activity {
         bufferingBar = (ProgressBar) findViewById(R.id.bufferingBar);
         errorText = (TextView) findViewById(R.id.errorText);
         playerTitle = (TextView) findViewById(R.id.playerTitle);
-        qualityButton = (Button) findViewById(R.id.qualityButton);
+        qualityToast = (TextView) findViewById(R.id.qualityToast);
+        hintText = (TextView) findViewById(R.id.hintText);
 
         client = AppState.getClient(this);
         itemId = getIntent().getStringExtra("itemId");
@@ -55,7 +56,7 @@ public class PlayerActivity extends Activity {
                 public void run() {
                     playerTitle.setVisibility(View.GONE);
                 }
-            }, 5000);
+            }, 4000);
         }
 
         if (client == null || itemId == null) {
@@ -64,15 +65,14 @@ public class PlayerActivity extends Activity {
             return;
         }
 
-        // Quality button: toggle between 原画 and 流畅
-        qualityButton.setVisibility(View.VISIBLE);
-        qualityButton.setText("原画");
-        qualityButton.setOnClickListener(new View.OnClickListener() {
+        // Show a short hint about quality switching
+        hintText.setVisibility(View.VISIBLE);
+        handler.postDelayed(new Runnable() {
             @Override
-            public void onClick(View v) {
-                toggleQuality();
+            public void run() {
+                hintText.setVisibility(View.GONE);
             }
-        });
+        }, 6000);
 
         // Start proxy and play
         startProxyAndPlay();
@@ -93,11 +93,11 @@ public class PlayerActivity extends Activity {
 
     private void toggleQuality() {
         lowQuality = !lowQuality;
-        qualityButton.setText(lowQuality ? "流畅" : "原画");
+        showQualityToast(lowQuality ? "已切换：流畅模式" : "已切换：原画模式");
 
         // Stop current playback
         if (videoView != null) {
-            videoView.stopPlayback();
+            try { videoView.stopPlayback(); } catch (Exception ignored) {}
         }
         if (proxy != null) {
             proxy.stop();
@@ -114,6 +114,20 @@ public class PlayerActivity extends Activity {
             }
         });
     }
+
+    private void showQualityToast(String msg) {
+        qualityToast.setText(msg);
+        qualityToast.setVisibility(View.VISIBLE);
+        handler.removeCallbacks(hideToastRunnable);
+        handler.postDelayed(hideToastRunnable, 2000);
+    }
+
+    private Runnable hideToastRunnable = new Runnable() {
+        @Override
+        public void run() {
+            qualityToast.setVisibility(View.GONE);
+        }
+    };
 
     private void startPlayback(String url, final String title) {
         try {
@@ -173,6 +187,11 @@ public class PlayerActivity extends Activity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        // INFO key (i) — toggle quality. Also MENU key as fallback.
+        if (keyCode == KeyEvent.KEYCODE_INFO || keyCode == KeyEvent.KEYCODE_MENU) {
+            toggleQuality();
+            return true;
+        }
         if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
             if (videoView.isPlaying()) {
                 videoView.pause();

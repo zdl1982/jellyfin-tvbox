@@ -75,7 +75,8 @@ public class LoginActivity extends Activity {
             @Override
             protected String doInBackground(Void... params) {
                 try {
-                    JellyfinClient client = new JellyfinClient(server);
+                    String deviceId = AppState.getDeviceId(LoginActivity.this);
+                    JellyfinClient client = new JellyfinClient(server, deviceId);
                     client.login(user, pass);
                     token = client.getToken();
                     // save to app state

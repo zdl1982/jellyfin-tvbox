@@ -24,9 +24,9 @@ import javax.net.ssl.SSLSession;
 public class JellyfinClient {
     private static final String CLIENT = "Jellyfin TV Box";
     private static final String DEVICE = "AndroidTV";
-    private static final String DEVICE_ID = "jellyfin-tvbox-android";
     private static final String VERSION = "1.0.0";
 
+    private final String deviceId;
     private String serverUrl;
     private String token;
     private String userId;
@@ -41,11 +41,25 @@ public class JellyfinClient {
     }
 
     public JellyfinClient(String serverUrl) {
+        this(serverUrl, null);
+    }
+
+    /**
+     * @param serverUrl Jellyfin server base URL
+     * @param deviceId  unique per-device ID. Jellyfin distinguishes clients by
+     *                  DeviceId — a hardcoded shared value would make multiple
+     *                  devices/users kick each other's sessions. Pass a unique
+     *                  value (ANDROID_ID or a persisted random UUID).
+     */
+    public JellyfinClient(String serverUrl, String deviceId) {
         // strip trailing slash
         this.serverUrl = serverUrl;
         while (this.serverUrl.endsWith("/")) {
             this.serverUrl = this.serverUrl.substring(0, this.serverUrl.length() - 1);
         }
+        this.deviceId = (deviceId == null || deviceId.isEmpty())
+            ? "jellyfin-tvbox-" + Math.abs((serverUrl + System.currentTimeMillis()).hashCode())
+            : deviceId;
     }
 
     public String getToken() { return token; }
@@ -54,42 +68,45 @@ public class JellyfinClient {
 
     private String authHeader() {
         return "MediaBrowser Client=\"" + CLIENT + "\", Device=\"" + DEVICE +
-               "\", DeviceId=\"" + DEVICE_ID + "\", Version=\"" + VERSION + "\"";
+               "\", DeviceId=\"" + deviceId + "\", Version=\"" + VERSION + "\"";
     }
 
     private String http(String method, String path, String body, boolean withToken) throws Exception {
         URL url = new URL(serverUrl + path);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod(method);
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(30000);
-        conn.setRequestProperty("Accept", "application/json");
-        conn.setRequestProperty("X-Emby-Authorization", authHeader());
-        if (withToken && token != null) {
-            conn.setRequestProperty("X-Emby-Token", token);
+        try {
+            conn.setRequestMethod(method);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("X-Emby-Authorization", authHeader());
+            if (withToken && token != null) {
+                conn.setRequestProperty("X-Emby-Token", token);
+            }
+            if (body != null) {
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
+                OutputStream os = conn.getOutputStream();
+                os.write(body.getBytes("UTF-8"));
+                os.close();
+            }
+            int code = conn.getResponseCode();
+            InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            if (is == null) is = conn.getErrorStream();
+            StringBuilder sb = new StringBuilder();
+            if (is != null) {
+                BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+                br.close();
+            }
+            if (code >= 400) {
+                throw new HttpException(code, sb.toString());
+            }
+            return sb.toString();
+        } finally {
+            conn.disconnect();
         }
-        if (body != null) {
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setDoOutput(true);
-            OutputStream os = conn.getOutputStream();
-            os.write(body.getBytes("UTF-8"));
-            os.close();
-        }
-        int code = conn.getResponseCode();
-        InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
-        if (is == null) is = conn.getErrorStream();
-        StringBuilder sb = new StringBuilder();
-        if (is != null) {
-            BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
-            String line;
-            while ((line = br.readLine()) != null) sb.append(line);
-            br.close();
-        }
-        conn.disconnect();
-        if (code >= 400) {
-            throw new HttpException(code, sb.toString());
-        }
-        return sb.toString();
     }
 
     public static class HttpException extends Exception {

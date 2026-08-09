@@ -201,11 +201,6 @@ public class MainActivity extends Activity {
             intent.putExtra("itemId", m.getId());
             intent.putExtra("title", m.getName());
             startActivity(intent);
-        } else if ("Video".equals(type)) {
-            Intent intent = new Intent(this, PlayerActivity.class);
-            intent.putExtra("itemId", m.getId());
-            intent.putExtra("title", m.getName());
-            startActivity(intent);
         } else {
             // unknown type, try playing if it's a video
             if ("Video".equals(m.getMediaType())) {
@@ -219,6 +214,13 @@ public class MainActivity extends Activity {
 
     private void setLoading(boolean loading) {
         loadingBar.setVisibility(loading ? View.VISIBLE : View.GONE);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // Drop cached bitmaps so the Activity can be GC'd promptly.
+        imageCache.clear();
     }
 
     @Override
@@ -274,39 +276,107 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void loadImage(final String id, String url, final ImageView image) {
-        new AsyncTask<String, Void, Bitmap>() {
-            @Override
-            protected Bitmap doInBackground(String... u) {
+    /**
+     * Load an image asynchronously into the given ImageView.
+     *
+     * - Cancels any previous load in flight for the same ImageView (tag-based),
+     *   so fast scrolling can't pile up stale tasks or download the same image
+     *   twice.
+     * - Holds only a WeakReference to the ImageView, so a recycled/scrolled-away
+     *   view is not written to (avoids cross-images) and the task doesn't leak
+     *   the Activity.
+     */
+    private void loadImage(final String id, final String url, ImageView image) {
+        // Cancel any task already bound to this view
+        Object tag = image.getTag();
+        if (tag instanceof AsyncTask) {
+            ((AsyncTask) tag).cancel(true);
+        }
+
+        final ImageTask task = new ImageTask(id, image);
+        image.setTag(task);
+        task.execute(url);
+    }
+
+    /** AsyncTask that decodes an image and applies it to a WeakReference'd ImageView. */
+    private class ImageTask extends AsyncTask<String, Void, Bitmap> {
+        private final String id;
+        private final java.lang.ref.WeakReference<ImageView> imageRef;
+
+        ImageTask(String id, ImageView image) {
+            this.id = id;
+            this.imageRef = new java.lang.ref.WeakReference<ImageView>(image);
+        }
+
+        @Override
+        protected Bitmap doInBackground(String... u) {
+            if (isCancelled()) return null;
+            try {
+                URL uu = new URL(u[0]);
+                HttpURLConnection conn = (HttpURLConnection) uu.openConnection();
                 try {
-                    URL uu = new URL(u[0]);
-                    HttpURLConnection conn = (HttpURLConnection) uu.openConnection();
                     conn.setConnectTimeout(10000);
                     conn.setReadTimeout(10000);
                     conn.setRequestProperty("X-Emby-Token", client.getToken());
                     InputStream is = conn.getInputStream();
                     Bitmap bm = BitmapFactory.decodeStream(is);
                     is.close();
-                    conn.disconnect();
                     if (bm != null) imageCache.put(id, bm);
                     return bm;
-                } catch (Exception e) {
-                    return null;
+                } finally {
+                    conn.disconnect();
                 }
+            } catch (Exception e) {
+                return null;
             }
-            @Override
-            protected void onPostExecute(Bitmap bm) {
-                if (bm != null) image.setImageBitmap(bm);
+        }
+
+        @Override
+        protected void onPostExecute(Bitmap bm) {
+            if (bm == null || isCancelled()) return;
+            ImageView image = imageRef.get();
+            // Only apply if this task is still the one bound to the view
+            if (image != null && image.getTag() == this) {
+                image.setImageBitmap(bm);
             }
-        }.execute(url);
+        }
     }
 
+    /**
+     * Bounded image cache. Uses SoftReferences so the GC can reclaim bitmaps
+     * under memory pressure, but caps the number of entries so very large
+     * libraries don't hold unbounded totals.
+     */
     private static class ImageCache {
+        private static final int MAX_ENTRIES = 120;
         private final HashMap<String, SoftReference<Bitmap>> map = new HashMap<String, SoftReference<Bitmap>>();
+        private final java.util.LinkedList<String> order = new java.util.LinkedList<String>();
+
         public Bitmap get(String k) {
             SoftReference<Bitmap> r = map.get(k);
             return r == null ? null : r.get();
         }
-        public void put(String k, Bitmap b) { map.put(k, new SoftReference<Bitmap>(b)); }
+
+        public void put(String k, Bitmap b) {
+            if (map.containsKey(k)) {
+                map.put(k, new SoftReference<Bitmap>(b));
+                order.remove(k);
+                order.addFirst(k);
+                return;
+            }
+            // Evict oldest entry once we exceed the cap
+            while (map.size() >= MAX_ENTRIES && !order.isEmpty()) {
+                String oldest = order.removeLast();
+                map.remove(oldest);
+            }
+            map.put(k, new SoftReference<Bitmap>(b));
+            order.addFirst(k);
+        }
+
+        /** Drop all cached bitmaps (called from onDestroy). */
+        public void clear() {
+            map.clear();
+            order.clear();
+        }
     }
 }

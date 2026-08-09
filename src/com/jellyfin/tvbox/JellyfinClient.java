@@ -164,9 +164,14 @@ public class JellyfinClient {
      * Use this when the network is slow and the user wants smooth playback.
      */
     public String getTranscodedStreamUrl(String itemId) {
-        return serverUrl + "/Videos/" + itemId + "/stream?static=true&api_key=" + token
+        // NOTE: do NOT use static=true here — it forces direct streaming of the
+        // original file and ignores all transcode params. Without it, Jellyfin
+        // transcodes HEVC->H264 and outputs an MP4 container that Android 4's
+        // MediaPlayer can actually decode.
+        return serverUrl + "/Videos/" + itemId + "/stream?api_key=" + token
             + "&VideoCodec=h264&AudioCodec=aac"
             + "&MaxWidth=854&MaxHeight=480&MaxBitRate=2000000"
-            + "&Level=-1&Cabac=true&SubtitleMethod=Encode";
+            + "&Level=-1&Cabac=true&SubtitleMethod=Encode"
+            + "&Container=mp4";
     }
 }

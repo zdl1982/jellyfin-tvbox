@@ -28,7 +28,7 @@ public class PlayerActivity extends Activity {
     private StreamingProxy proxy;
     private Handler handler = new Handler();
     private boolean started = false;
-    private boolean lowQuality = false; // false = 原画, true = 流畅
+    private boolean lowQuality = true; // 默认流畅模式，可按MENU键切原画
     private String itemId;
     private String title;
 
@@ -66,6 +66,7 @@ public class PlayerActivity extends Activity {
         }
 
         // Show a short hint about quality switching
+        hintText.setText("默认流畅模式 · 按MENU键切换原画");
         hintText.setVisibility(View.VISIBLE);
         handler.postDelayed(new Runnable() {
             @Override
@@ -187,8 +188,8 @@ public class PlayerActivity extends Activity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        // INFO key (i) — toggle quality. Also MENU key as fallback.
-        if (keyCode == KeyEvent.KEYCODE_INFO || keyCode == KeyEvent.KEYCODE_MENU) {
+        // MENU key — toggle between 流畅/原画. INFO key (i) kept as fallback.
+        if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_INFO) {
             toggleQuality();
             return true;
         }

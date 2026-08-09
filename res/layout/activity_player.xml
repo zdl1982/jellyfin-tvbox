@@ -54,7 +54,7 @@
         android:shadowRadius="4.0"
         android:visibility="gone" />
 
-    <!-- 底部提示：告诉用户按 INFO 键切换画质 -->
+    <!-- 底部提示：告诉用户按 MENU 键切换原画 -->
     <TextView
         android:id="@+id/hintText"
         android:layout_width="wrap_content"
@@ -62,7 +62,7 @@
         android:layout_alignParentBottom="true"
         android:layout_centerHorizontal="true"
         android:layout_marginBottom="16dp"
-        android:text="按 INFO 键切换画质"
+        android:text="按 MENU 键切换原画模式"
         android:textSize="12sp"
         android:textColor="#88FFFFFF"
         android:shadowColor="#000000"

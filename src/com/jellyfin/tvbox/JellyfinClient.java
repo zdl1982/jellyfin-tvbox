@@ -160,6 +160,34 @@ public class JellyfinClient {
     }
 
     /**
+     * Query the default subtitle stream index for an item.
+     * Returns -1 if no subtitle track is found or marked as default.
+     */
+    private int getDefaultSubtitleStreamIndex(String itemId) {
+        try {
+            String resp = http("GET", "/Users/" + userId + "/Items/" + itemId
+                + "?Fields=MediaSources", null, true);
+            JSONObject item = new JSONObject(resp);
+            JSONArray sources = item.optJSONArray("MediaSources");
+            if (sources != null && sources.length() > 0) {
+                JSONArray streams = sources.getJSONObject(0).optJSONArray("MediaStreams");
+                if (streams != null) {
+                    for (int i = 0; i < streams.length(); i++) {
+                        JSONObject s = streams.getJSONObject(i);
+                        if ("Subtitle".equals(s.optString("Type"))
+                            && s.optBoolean("IsDefault", false)) {
+                            return s.optInt("Index", -1);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Cannot query subtitles, proceed without them
+        }
+        return -1;
+    }
+
+    /**
      * Build a transcoded stream URL with lower bitrate / resolution.
      * Use this when the network is slow and the user wants smooth playback.
      *
@@ -167,14 +195,23 @@ public class JellyfinClient {
      * live transcode with Container=mp4 outputs fragmented MP4 (fMP4) which
      * Android 4's MediaPlayer cannot parse (it buffers forever). MPEG-TS is
      * a continuous stream format natively supported by Android 4's MediaPlayer.
+     *
+     * Also queries the default subtitle stream index and appends it to the
+     * transcode URL so that subtitles are burned into the video.
      */
     public String getTranscodedStreamUrl(String itemId) {
         // NOTE: do NOT use static=true here — it forces direct streaming of the
         // original file and ignores all transcode params.
-        return serverUrl + "/Videos/" + itemId + "/stream?api_key=" + token
+        String url = serverUrl + "/Videos/" + itemId + "/stream?api_key=" + token
             + "&VideoCodec=h264&AudioCodec=aac"
             + "&MaxWidth=854&MaxHeight=480&MaxBitRate=2000000"
             + "&Level=-1&Cabac=true&SubtitleMethod=Encode"
             + "&Container=ts";
+        // Query default subtitle track and append to URL
+        int subIdx = getDefaultSubtitleStreamIndex(itemId);
+        if (subIdx >= 0) {
+            url += "&SubtitleStreamIndex=" + subIdx;
+        }
+        return url;
     }
 }

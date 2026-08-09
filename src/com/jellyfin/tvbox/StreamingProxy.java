@@ -9,6 +9,8 @@ import java.net.Socket;
 import java.net.URL;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -24,10 +26,18 @@ import javax.net.ssl.HttpsURLConnection;
  * request to the real Jellyfin HTTPS stream URL using HttpURLConnection
  * (which *does* use our TLS 1.2 factory), and pipes the bytes back.
  * MediaPlayer talks plain HTTP to localhost, which always works.
+ *
+ * Uses a multi-threaded producer-consumer model with a BlockingQueue to
+ * decouple upstream reads from downstream writes. This prevents the player
+ * from stalling when the upstream (Jellyfin transcode) is temporarily slow.
  */
 public class StreamingProxy {
 
     private static final int PORT = 18080;
+    private static final int CHUNK_SIZE = 65536;       // 64 KB per chunk
+    private static final int QUEUE_CAPACITY = 64;       // 64 chunks = 4 MB max buffer
+    private static final byte[] END_SENTINEL = new byte[0]; // signals end of stream
+
     private ServerSocket serverSocket;
     private Thread acceptThread;
     private AtomicBoolean running = new AtomicBoolean(false);
@@ -145,55 +155,80 @@ public class StreamingProxy {
 
             int code = conn.getResponseCode();
             if (code == 200 || code == 206 || code == 202) {
-                // — Pre-buffer: read data into memory before sending to MediaPlayer —
-                // This gives the player a head start so it doesn't stall waiting
-                // for the proxy to fetch from the (slow) upstream server.
-                InputStream upstreamIn = conn.getInputStream();
-                boolean headOnly = "HEAD".equalsIgnoreCase(method);
+                final InputStream upstreamIn = conn.getInputStream();
+                final boolean headOnly = "HEAD".equalsIgnoreCase(method);
 
-                // Pre-read up to 2 MB into a ring buffer
-                byte[] prebuf = new byte[2 * 1024 * 1024]; // 2 MB
-                int prebufLen = 0;
-                int prebufCap = prebuf.length;
-                while (prebufLen < prebufCap) {
-                    int n = upstreamIn.read(prebuf, prebufLen, prebufCap - prebufLen);
-                    if (n < 0) break;
-                    prebufLen += n;
-                    // Once we have at least 512 KB, it's enough to start sending
-                    if (prebufLen >= 512 * 1024) break;
-                }
-
-                // Send response headers (with actual Content-Length if known)
+                // Send response headers
                 StringBuilder resp = new StringBuilder();
                 resp.append("HTTP/1.1 ").append(code).append(" ").append(statusText(code)).append("\r\n");
                 resp.append("Content-Type: ").append(conn.getContentType()).append("\r\n");
                 resp.append("Accept-Ranges: bytes\r\n");
-                // Use the *original* upstream Content-Length so the player
-                // knows the total file size and can show the seek bar
                 String cl = conn.getHeaderField("Content-Length");
                 if (cl != null) resp.append("Content-Length: ").append(cl).append("\r\n");
                 String cr = conn.getHeaderField("Content-Range");
                 if (cr != null) resp.append("Content-Range: ").append(cr).append("\r\n");
                 resp.append("Connection: close\r\n");
-                resp.append("X-Proxy: JellyfinTV-Prebuffer\r\n");
+                resp.append("X-Proxy: JellyfinTV-MultiThread\r\n");
                 resp.append("\r\n");
                 out.write(resp.toString().getBytes("ISO-8859-1"));
                 out.flush();
 
-                // Send pre-buffered data first (instant burst → player gets buffer)
-                out.write(prebuf, 0, prebufLen);
-                out.flush();
-
-                // Stream remaining data
-                byte[] buffer = new byte[65536];
-                int n;
-                long totalSent = prebufLen;
-                while (!headOnly && (n = upstreamIn.read(buffer)) != -1) {
-                    out.write(buffer, 0, n);
-                    out.flush(); // flush frequently so player gets data ASAP
-                    totalSent += n;
+                if (headOnly) {
+                    upstreamIn.close();
+                    conn.disconnect();
+                    client.close();
+                    return;
                 }
-                upstreamIn.close();
+
+                // --- Multi-threaded streaming ---
+                // Producer thread: reads from upstream Jellyfin, puts chunks into queue
+                // Main thread: takes chunks from queue, writes to client socket
+                // This decouples upstream latency from playback — even if ffmpeg
+                // is slow to produce the next frame, the player can consume from
+                // the buffered queue.
+                final BlockingQueue<byte[]> queue = new ArrayBlockingQueue<byte[]>(QUEUE_CAPACITY);
+                final AtomicBoolean producerDone = new AtomicBoolean(false);
+                final AtomicBoolean producerError = new AtomicBoolean(false);
+
+                Thread producer = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        byte[] buf = new byte[CHUNK_SIZE];
+                        try {
+                            while (true) {
+                                int n = upstreamIn.read(buf);
+                                if (n < 0) break; // EOF
+                                byte[] chunk = new byte[n];
+                                System.arraycopy(buf, 0, chunk, 0, n);
+                                queue.put(chunk); // blocks if queue is full
+                            }
+                        } catch (Exception e) {
+                            producerError.set(true);
+                        } finally {
+                            producerDone.set(true);
+                            // Wake up consumer if it's waiting on an empty queue
+                            try { queue.put(END_SENTINEL); } catch (Exception ignored) {}
+                            try { upstreamIn.close(); } catch (Exception ignored) {}
+                        }
+                    }
+                });
+                producer.setDaemon(true);
+                producer.start();
+
+                // Consumer: take chunks from queue and write to socket
+                try {
+                    while (true) {
+                        byte[] chunk = queue.take(); // blocks until data available
+                        if (chunk.length == 0) break; // END_SENTINEL
+                        out.write(chunk, 0, chunk.length);
+                        out.flush();
+                    }
+                } catch (Exception e) {
+                    // Client disconnected or error — stop consuming
+                }
+
+                // Ensure producer finishes
+                try { producer.join(5000); } catch (Exception ignored) {}
             } else {
                 sendSimple(out, String.valueOf(code), "text/plain", "upstream error");
             }

@@ -14,9 +14,14 @@ import android.widget.VideoView;
 
 /**
  * Video player with local proxy for HTTPS compatibility and
- * quality switching (INFO key on TV remote) for slow networks.
+ * quality switching (MENU key on TV remote) among three modes:
+ * 流畅 (480p) → 中等 (720p) → 原画 (direct) → 流畅 → ...
  */
 public class PlayerActivity extends Activity {
+
+    private static final int QUALITY_FLUID = 0;   // 480p transcode
+    private static final int QUALITY_MEDIUM = 1;  // 720p transcode
+    private static final int QUALITY_ORIGINAL = 2; // direct stream
 
     private VideoView videoView;
     private ProgressBar bufferingBar;
@@ -28,7 +33,7 @@ public class PlayerActivity extends Activity {
     private StreamingProxy proxy;
     private Handler handler = new Handler();
     private boolean started = false;
-    private boolean lowQuality = true; // 默认流畅模式，可按MENU键切原画
+    private int quality = QUALITY_FLUID; // 默认流畅模式
     private String itemId;
     private String title;
 
@@ -66,7 +71,7 @@ public class PlayerActivity extends Activity {
         }
 
         // Show a short hint about quality switching
-        hintText.setText("默认流畅模式 · 按MENU键切换原画");
+        hintText.setText("默认流畅模式 · 按MENU键切换画质");
         hintText.setVisibility(View.VISIBLE);
         handler.postDelayed(new Runnable() {
             @Override
@@ -84,17 +89,31 @@ public class PlayerActivity extends Activity {
         proxy = new StreamingProxy(client);
         proxy.start();
 
-        // Build local URL; add ?q=low for transcoded stream
+        // Build local URL; append quality param for transcoded streams
         String localUrl = proxy.getLocalUrl(itemId);
-        if (lowQuality) {
+        if (quality == QUALITY_FLUID) {
             localUrl = localUrl + "?q=low";
+        } else if (quality == QUALITY_MEDIUM) {
+            localUrl = localUrl + "?q=medium";
         }
         startPlayback(localUrl, title);
     }
 
+    private String qualityName(int q) {
+        switch (q) {
+            case QUALITY_MEDIUM: return "中等模式 (720P)";
+            case QUALITY_ORIGINAL: return "原画模式";
+            default: return "流畅模式 (480P)";
+        }
+    }
+
     private void toggleQuality() {
-        lowQuality = !lowQuality;
-        showQualityToast(lowQuality ? "已切换：流畅模式" : "已切换：原画模式");
+        // Cycle: 流畅 → 中等 → 原画 → 流畅 → ...
+        quality++;
+        if (quality > QUALITY_ORIGINAL) {
+            quality = QUALITY_FLUID;
+        }
+        showQualityToast("已切换：" + qualityName(quality));
 
         // Stop current playback
         if (videoView != null) {
@@ -188,7 +207,7 @@ public class PlayerActivity extends Activity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        // MENU key — toggle between 流畅/原画. INFO key (i) kept as fallback.
+        // MENU key — cycle: 流畅(480P) → 中等(720P) → 原画 → 流畅 → ...
         if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_INFO) {
             toggleQuality();
             return true;

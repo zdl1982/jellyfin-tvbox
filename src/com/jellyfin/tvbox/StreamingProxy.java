@@ -116,16 +116,20 @@ public class StreamingProxy {
                 return;
             }
 
-            // Parse item id from path: /stream/<itemId>[?q=low]
+            // Parse item id from path: /stream/<itemId>[?q=low|medium]
             String itemId = null;
-            boolean lowQuality = false;
+            String quality = null; // null=original, "low"=480p, "medium"=720p
             if (path != null && path.startsWith("/stream/")) {
                 itemId = path.substring("/stream/".length());
                 int q = itemId.indexOf('?');
                 if (q >= 0) {
                     String query = itemId.substring(q + 1);
                     itemId = itemId.substring(0, q);
-                    lowQuality = query.contains("q=low");
+                    if (query.contains("q=low")) {
+                        quality = "low";
+                    } else if (query.contains("q=medium")) {
+                        quality = "medium";
+                    }
                 }
             }
             if (itemId == null || itemId.isEmpty()) {
@@ -134,10 +138,15 @@ public class StreamingProxy {
                 return;
             }
 
-            // Build upstream URL: transcoded flavor if low quality requested
-            String upstream = lowQuality
-                ? jfClient.getTranscodedStreamUrl(itemId)
-                : jfClient.getStreamUrl(itemId);
+            // Build upstream URL: transcoded flavor for low/medium, direct for original
+            String upstream;
+            if ("medium".equals(quality)) {
+                upstream = jfClient.getMediumStreamUrl(itemId);
+            } else if ("low".equals(quality)) {
+                upstream = jfClient.getFluidStreamUrl(itemId);
+            } else {
+                upstream = jfClient.getStreamUrl(itemId);
+            }
 
             // Open upstream connection (uses TlsHelper TLS 1.2)
             HttpURLConnection conn = (HttpURLConnection) new URL(upstream).openConnection();

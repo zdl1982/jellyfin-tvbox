@@ -188,8 +188,7 @@ public class JellyfinClient {
     }
 
     /**
-     * Build a transcoded stream URL with lower bitrate / resolution.
-     * Use this when the network is slow and the user wants smooth playback.
+     * Build a transcoded stream URL at a given target resolution/bitrate.
      *
      * NOTE: Uses Container=ts (MPEG-TS) instead of mp4 because Jellyfin's
      * live transcode with Container=mp4 outputs fragmented MP4 (fMP4) which
@@ -199,12 +198,13 @@ public class JellyfinClient {
      * Also queries the default subtitle stream index and appends it to the
      * transcode URL so that subtitles are burned into the video.
      */
-    public String getTranscodedStreamUrl(String itemId) {
+    private String buildTranscodeUrl(String itemId, int maxWidth, int maxHeight, int maxBitRate) {
         // NOTE: do NOT use static=true here — it forces direct streaming of the
         // original file and ignores all transcode params.
         String url = serverUrl + "/Videos/" + itemId + "/stream?api_key=" + token
             + "&VideoCodec=h264&AudioCodec=aac"
-            + "&MaxWidth=854&MaxHeight=480&MaxBitRate=2000000"
+            + "&MaxWidth=" + maxWidth + "&MaxHeight=" + maxHeight
+            + "&MaxBitRate=" + maxBitRate
             + "&Level=-1&Cabac=true&SubtitleMethod=Encode"
             + "&Container=ts";
         // Query default subtitle track and append to URL
@@ -213,5 +213,15 @@ public class JellyfinClient {
             url += "&SubtitleStreamIndex=" + subIdx;
         }
         return url;
+    }
+
+    /** Fluid mode: 480p transcode, low bitrate (2 Mbps). */
+    public String getFluidStreamUrl(String itemId) {
+        return buildTranscodeUrl(itemId, 854, 480, 2000000);
+    }
+
+    /** Medium mode: 720p transcode, medium bitrate (4 Mbps). */
+    public String getMediumStreamUrl(String itemId) {
+        return buildTranscodeUrl(itemId, 1280, 720, 4000000);
     }
 }

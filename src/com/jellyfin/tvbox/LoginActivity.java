@@ -49,8 +49,15 @@ public class LoginActivity extends Activity {
             }
         });
 
-        // auto-focus on server URL
-        serverUrlEdit.requestFocus();
+        // Focus on the login button so the user can immediately press Enter
+        // to trigger login, or navigate up/down to edit fields as needed.
+        // Using post() ensures the layout is laid out before focusing.
+        loginButton.post(new Runnable() {
+            @Override
+            public void run() {
+                loginButton.requestFocus();
+            }
+        });
     }
 
     private void doLogin() {

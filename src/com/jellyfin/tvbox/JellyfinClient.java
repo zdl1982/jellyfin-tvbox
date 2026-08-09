@@ -162,16 +162,19 @@ public class JellyfinClient {
     /**
      * Build a transcoded stream URL with lower bitrate / resolution.
      * Use this when the network is slow and the user wants smooth playback.
+     *
+     * NOTE: Uses Container=ts (MPEG-TS) instead of mp4 because Jellyfin's
+     * live transcode with Container=mp4 outputs fragmented MP4 (fMP4) which
+     * Android 4's MediaPlayer cannot parse (it buffers forever). MPEG-TS is
+     * a continuous stream format natively supported by Android 4's MediaPlayer.
      */
     public String getTranscodedStreamUrl(String itemId) {
         // NOTE: do NOT use static=true here — it forces direct streaming of the
-        // original file and ignores all transcode params. Without it, Jellyfin
-        // transcodes HEVC->H264 and outputs an MP4 container that Android 4's
-        // MediaPlayer can actually decode.
+        // original file and ignores all transcode params.
         return serverUrl + "/Videos/" + itemId + "/stream?api_key=" + token
             + "&VideoCodec=h264&AudioCodec=aac"
             + "&MaxWidth=854&MaxHeight=480&MaxBitRate=2000000"
             + "&Level=-1&Cabac=true&SubtitleMethod=Encode"
-            + "&Container=mp4";
+            + "&Container=ts";
     }
 }

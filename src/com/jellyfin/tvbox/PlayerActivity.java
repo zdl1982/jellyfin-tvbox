@@ -89,12 +89,17 @@ public class PlayerActivity extends Activity {
         proxy = new StreamingProxy(client);
         proxy.start();
 
-        // Build local URL; append quality param for transcoded streams
-        String localUrl = proxy.getLocalUrl(itemId);
-        if (quality == QUALITY_FLUID) {
-            localUrl = localUrl + "?q=low";
-        } else if (quality == QUALITY_MEDIUM) {
-            localUrl = localUrl + "?q=medium";
+        // Build local URL:
+        // - Original mode: direct stream via proxy (works with MP4 files)
+        // - Fluid/Medium mode: HLS playlist via proxy (transcoded TS segments)
+        //   Android 4's MediaPlayer supports HLS natively, avoiding the
+        //   fMP4 parse issue and the TS error 1/-1004.
+        String localUrl;
+        if (quality == QUALITY_ORIGINAL) {
+            localUrl = proxy.getLocalUrl(itemId);
+        } else {
+            String q = (quality == QUALITY_FLUID) ? "low" : "medium";
+            localUrl = proxy.getHlsLocalUrl(itemId, q);
         }
         startPlayback(localUrl, title);
     }

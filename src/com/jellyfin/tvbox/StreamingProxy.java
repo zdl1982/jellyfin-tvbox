@@ -27,9 +27,17 @@ import javax.net.ssl.HttpsURLConnection;
  * (which *does* use our TLS 1.2 factory), and pipes the bytes back.
  * MediaPlayer talks plain HTTP to localhost, which always works.
  *
- * Uses a multi-threaded producer-consumer model with a BlockingQueue to
- * decouple upstream reads from downstream writes. This prevents the player
- * from stalling when the upstream (Jellyfin transcode) is temporarily slow.
+ * Routes:
+ *   /stream/<itemId>              — original quality direct stream
+ *   /stream/<itemId>?q=low|medium — transcoded stream (NOT used; kept for compat)
+ *   /hls/<itemId>/playlist.m3u8?q=low|medium  — HLS playlist for fluid/medium
+ *   /hls/<itemId>/seg/<seq>.ts?... — HLS TS segment (rewritten URL from playlist)
+ *
+ * HLS approach: Android 4 MediaPlayer supports HLS natively. Jellyfin's
+ * /Videos/{id}/main.m3u8 endpoint returns a VOD HLS playlist with 3-second
+ * TS segments. This avoids the fragmented MP4 problem (which Android 4
+ * cannot parse) and the progressive MPEG-TS problem (which gives error
+ * 1/-1004 on Android 4).
  */
 public class StreamingProxy {
 
@@ -70,9 +78,17 @@ public class StreamingProxy {
         try { if (serverSocket != null) serverSocket.close(); } catch (Exception e) {}
     }
 
-    /** Build the local URL that MediaPlayer should play. */
+    /** Build the local URL for direct/original stream. */
     public String getLocalUrl(String itemId) {
         return "http://127.0.0.1:" + PORT + "/stream/" + itemId;
+    }
+
+    /** Build the local HLS playlist URL for transcoded streaming.
+     *  @param itemId  the Jellyfin item ID
+     *  @param quality "low" for 480p, "medium" for 720p
+     */
+    public String getHlsLocalUrl(String itemId, String quality) {
+        return "http://127.0.0.1:" + PORT + "/hls/" + itemId + "/playlist.m3u8?q=" + quality;
     }
 
     private void acceptLoop() {
@@ -116,137 +132,276 @@ public class StreamingProxy {
                 return;
             }
 
-            // Parse item id from path: /stream/<itemId>[?q=low|medium]
-            String itemId = null;
-            String quality = null; // null=original, "low"=480p, "medium"=720p
-            if (path != null && path.startsWith("/stream/")) {
-                itemId = path.substring("/stream/".length());
-                int q = itemId.indexOf('?');
-                if (q >= 0) {
-                    String query = itemId.substring(q + 1);
-                    itemId = itemId.substring(0, q);
-                    if (query.contains("q=low")) {
-                        quality = "low";
-                    } else if (query.contains("q=medium")) {
-                        quality = "medium";
-                    }
-                }
-            }
-            if (itemId == null || itemId.isEmpty()) {
-                sendSimple(out, "400 Bad Request", "text/plain", "missing item id");
-                client.close();
-                return;
-            }
-
-            // Build upstream URL: transcoded flavor for low/medium, direct for original
-            String upstream;
-            if ("medium".equals(quality)) {
-                upstream = jfClient.getMediumStreamUrl(itemId);
-            } else if ("low".equals(quality)) {
-                upstream = jfClient.getFluidStreamUrl(itemId);
+            // Route dispatch
+            if (path != null && path.startsWith("/hls/")) {
+                handleHlsRoute(path, method, out);
             } else {
-                upstream = jfClient.getStreamUrl(itemId);
+                handleStreamRoute(path, method, headers, out);
             }
 
-            // Open upstream connection (uses TlsHelper TLS 1.2)
-            HttpURLConnection conn = (HttpURLConnection) new URL(upstream).openConnection();
-            conn.setConnectTimeout(20000);
-            conn.setReadTimeout(120000);
-            conn.setRequestProperty("Accept", "*/*");
-            conn.setRequestProperty("X-Emby-Token", jfClient.getToken());
-            conn.setRequestProperty("User-Agent", "Jellyfin-TVBox/1.0");
-
-            // Forward Range header for seeking
-            String range = headers.get("range");
-            if (range != null) {
-                conn.setRequestProperty("Range", range);
-            }
-
-            int code = conn.getResponseCode();
-            if (code == 200 || code == 206 || code == 202) {
-                final InputStream upstreamIn = conn.getInputStream();
-                final boolean headOnly = "HEAD".equalsIgnoreCase(method);
-
-                // Send response headers
-                StringBuilder resp = new StringBuilder();
-                resp.append("HTTP/1.1 ").append(code).append(" ").append(statusText(code)).append("\r\n");
-                resp.append("Content-Type: ").append(conn.getContentType()).append("\r\n");
-                resp.append("Accept-Ranges: bytes\r\n");
-                String cl = conn.getHeaderField("Content-Length");
-                if (cl != null) resp.append("Content-Length: ").append(cl).append("\r\n");
-                String cr = conn.getHeaderField("Content-Range");
-                if (cr != null) resp.append("Content-Range: ").append(cr).append("\r\n");
-                resp.append("Connection: close\r\n");
-                resp.append("X-Proxy: JellyfinTV-MultiThread\r\n");
-                resp.append("\r\n");
-                out.write(resp.toString().getBytes("ISO-8859-1"));
-                out.flush();
-
-                if (headOnly) {
-                    upstreamIn.close();
-                    conn.disconnect();
-                    client.close();
-                    return;
-                }
-
-                // --- Multi-threaded streaming ---
-                // Producer thread: reads from upstream Jellyfin, puts chunks into queue
-                // Main thread: takes chunks from queue, writes to client socket
-                // This decouples upstream latency from playback — even if ffmpeg
-                // is slow to produce the next frame, the player can consume from
-                // the buffered queue.
-                final BlockingQueue<byte[]> queue = new ArrayBlockingQueue<byte[]>(QUEUE_CAPACITY);
-                final AtomicBoolean producerDone = new AtomicBoolean(false);
-                final AtomicBoolean producerError = new AtomicBoolean(false);
-
-                Thread producer = new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        byte[] buf = new byte[CHUNK_SIZE];
-                        try {
-                            while (true) {
-                                int n = upstreamIn.read(buf);
-                                if (n < 0) break; // EOF
-                                byte[] chunk = new byte[n];
-                                System.arraycopy(buf, 0, chunk, 0, n);
-                                queue.put(chunk); // blocks if queue is full
-                            }
-                        } catch (Exception e) {
-                            producerError.set(true);
-                        } finally {
-                            producerDone.set(true);
-                            // Wake up consumer if it's waiting on an empty queue
-                            try { queue.put(END_SENTINEL); } catch (Exception ignored) {}
-                            try { upstreamIn.close(); } catch (Exception ignored) {}
-                        }
-                    }
-                });
-                producer.setDaemon(true);
-                producer.start();
-
-                // Consumer: take chunks from queue and write to socket
-                try {
-                    while (true) {
-                        byte[] chunk = queue.take(); // blocks until data available
-                        if (chunk.length == 0) break; // END_SENTINEL
-                        out.write(chunk, 0, chunk.length);
-                        out.flush();
-                    }
-                } catch (Exception e) {
-                    // Client disconnected or error — stop consuming
-                }
-
-                // Ensure producer finishes
-                try { producer.join(5000); } catch (Exception ignored) {}
-            } else {
-                sendSimple(out, String.valueOf(code), "text/plain", "upstream error");
-            }
-
-            conn.disconnect();
             client.close();
         } catch (Exception e) {
             try { client.close(); } catch (Exception ignored) {}
         }
+    }
+
+    // ===== Route: /stream/<itemId>[?q=low|medium] =====
+    private void handleStreamRoute(String path, String method,
+                                   Map<String, String> headers, OutputStream out) throws IOException {
+        String itemId = null;
+        String quality = null;
+        if (path != null && path.startsWith("/stream/")) {
+            itemId = path.substring("/stream/".length());
+            int q = itemId.indexOf('?');
+            if (q >= 0) {
+                String query = itemId.substring(q + 1);
+                itemId = itemId.substring(0, q);
+                if (query.contains("q=low")) {
+                    quality = "low";
+                } else if (query.contains("q=medium")) {
+                    quality = "medium";
+                }
+            }
+        }
+        if (itemId == null || itemId.isEmpty()) {
+            sendSimple(out, "400 Bad Request", "text/plain", "missing item id");
+            return;
+        }
+
+        // Build upstream URL
+        String upstream;
+        if ("medium".equals(quality)) {
+            upstream = jfClient.getMediumStreamUrl(itemId);
+        } else if ("low".equals(quality)) {
+            upstream = jfClient.getFluidStreamUrl(itemId);
+        } else {
+            upstream = jfClient.getStreamUrl(itemId);
+        }
+
+        proxyUpstream(upstream, method, headers, out);
+    }
+
+    // ===== Route: /hls/<itemId>/playlist.m3u8?q=low|medium  or  /hls/<itemId>/seg/<seq>.ts?... =====
+    private void handleHlsRoute(String path, String method, OutputStream out) throws IOException {
+        // path example: /hls/{itemId}/playlist.m3u8?q=low
+        // path example: /hls/{itemId}/seg/0.ts?api_key=...&params...
+        String rest = path.substring("/hls/".length()); // {itemId}/playlist.m3u8?q=low
+        int slash = rest.indexOf('/');
+        if (slash < 0) {
+            sendSimple(out, "400 Bad Request", "text/plain", "invalid hls path");
+            return;
+        }
+        String itemId = rest.substring(0, slash);
+        String subPath = rest.substring(slash + 1); // playlist.m3u8?q=low or seg/0.ts?params
+
+        // Parse query params from subPath
+        int qIdx = subPath.indexOf('?');
+        String query = (qIdx >= 0) ? subPath.substring(qIdx + 1) : "";
+        subPath = (qIdx >= 0) ? subPath.substring(0, qIdx) : subPath;
+
+        if (subPath.equals("playlist.m3u8")) {
+            handleHlsPlaylist(itemId, query, method, out);
+        } else if (subPath.startsWith("seg/")) {
+            handleHlsSegment(itemId, subPath, query, method, out);
+        } else {
+            sendSimple(out, "404 Not Found", "text/plain", "unknown hls path");
+        }
+    }
+
+    /** Fetch the HLS playlist from Jellyfin, rewrite segment URLs to go through proxy. */
+    private void handleHlsPlaylist(String itemId, String query, String method, OutputStream out) throws IOException {
+        // Extract quality from query
+        String quality = "low";
+        if (query.contains("q=medium")) {
+            quality = "medium";
+        }
+
+        // Build upstream HLS playlist URL
+        String upstream = jfClient.getHlsPlaylistUrl(itemId, quality);
+
+        // Fetch the playlist
+        HttpURLConnection conn = (HttpURLConnection) new URL(upstream).openConnection();
+        conn.setConnectTimeout(20000);
+        conn.setReadTimeout(30000);
+        conn.setRequestProperty("Accept", "*/*");
+        conn.setRequestProperty("X-Emby-Token", jfClient.getToken());
+        conn.setRequestProperty("User-Agent", "Jellyfin-TVBox/1.0");
+
+        int code = conn.getResponseCode();
+        if (code != 200) {
+            sendSimple(out, String.valueOf(code), "text/plain", "upstream error");
+            conn.disconnect();
+            return;
+        }
+
+        // Read the playlist content
+        InputStream upstreamIn = conn.getInputStream();
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = upstreamIn.read(buf)) >= 0) {
+            baos.write(buf, 0, n);
+        }
+        upstreamIn.close();
+        conn.disconnect();
+
+        String playlist = baos.toString("UTF-8");
+
+        // Rewrite segment URLs: hls1/main/{seq}.ts?params -> http://127.0.0.1:PORT/hls/{itemId}/seg/{seq}.ts?params
+        String proxyBase = "http://127.0.0.1:" + PORT + "/hls/" + itemId + "/seg/";
+        playlist = playlist.replaceAll("hls1/main/(\\d+\\.ts\\?[^\\s]*)", proxyBase + "$1");
+
+        // Send response
+        StringBuilder resp = new StringBuilder();
+        resp.append("HTTP/1.1 200 OK\r\n");
+        resp.append("Content-Type: application/vnd.apple.mpegurl\r\n");
+        resp.append("Content-Length: ").append(playlist.getBytes("UTF-8").length).append("\r\n");
+        resp.append("Connection: close\r\n");
+        resp.append("X-Proxy: JellyfinTV-HLS\r\n");
+        resp.append("\r\n");
+        resp.append(playlist);
+        out.write(resp.toString().getBytes("UTF-8"));
+        out.flush();
+    }
+
+    /** Fetch a single HLS TS segment from Jellyfin and proxy it. */
+    private void handleHlsSegment(String itemId, String subPath, String query, String method, OutputStream out) throws IOException {
+        // subPath: seg/0.ts, query: api_key=...&VideoCodec=...&...
+        String seq = subPath.substring("seg/".length()); // 0.ts
+        if (seq.isEmpty()) {
+            sendSimple(out, "400 Bad Request", "text/plain", "missing segment");
+            return;
+        }
+
+        // Build upstream URL: {serverUrl}/Videos/{itemId}/hls1/main/{seq.ts}?{query}
+        // The query params come from the rewritten playlist URL (includes api_key, etc.)
+        String upstream = jfClient.getServerUrl() + "/Videos/" + itemId + "/hls1/main/" + seq;
+        if (query != null && !query.isEmpty()) {
+            upstream += "?" + query;
+        }
+
+        // Simple proxy: fetch and pipe bytes
+        HttpURLConnection conn = (HttpURLConnection) new URL(upstream).openConnection();
+        conn.setConnectTimeout(20000);
+        conn.setReadTimeout(60000);
+        conn.setRequestProperty("Accept", "*/*");
+        conn.setRequestProperty("X-Emby-Token", jfClient.getToken());
+        conn.setRequestProperty("User-Agent", "Jellyfin-TVBox/1.0");
+
+        int code = conn.getResponseCode();
+        if (code == 200 || code == 206) {
+            InputStream upstreamIn = conn.getInputStream();
+
+            StringBuilder resp = new StringBuilder();
+            resp.append("HTTP/1.1 200 OK\r\n");
+            resp.append("Content-Type: video/mp2t\r\n");
+            String cl = conn.getHeaderField("Content-Length");
+            if (cl != null) resp.append("Content-Length: ").append(cl).append("\r\n");
+            resp.append("Connection: close\r\n");
+            resp.append("X-Proxy: JellyfinTV-HLS\r\n");
+            resp.append("\r\n");
+            out.write(resp.toString().getBytes("ISO-8859-1"));
+            out.flush();
+
+            // Pipe the TS data
+            byte[] buffer = new byte[CHUNK_SIZE];
+            while (true) {
+                int read = upstreamIn.read(buffer);
+                if (read < 0) break;
+                out.write(buffer, 0, read);
+            }
+            out.flush();
+            upstreamIn.close();
+        } else {
+            sendSimple(out, String.valueOf(code), "text/plain", "segment error");
+        }
+        conn.disconnect();
+    }
+
+    /** Generic upstream proxy with multi-threaded streaming. */
+    private void proxyUpstream(String upstream, String method,
+                                Map<String, String> headers, OutputStream out) throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(upstream).openConnection();
+        conn.setConnectTimeout(20000);
+        conn.setReadTimeout(120000);
+        conn.setRequestProperty("Accept", "*/*");
+        conn.setRequestProperty("X-Emby-Token", jfClient.getToken());
+        conn.setRequestProperty("User-Agent", "Jellyfin-TVBox/1.0");
+
+        String range = headers.get("range");
+        if (range != null) {
+            conn.setRequestProperty("Range", range);
+        }
+
+        int code = conn.getResponseCode();
+        if (code == 200 || code == 206 || code == 202) {
+            final InputStream upstreamIn = conn.getInputStream();
+            final boolean headOnly = "HEAD".equalsIgnoreCase(method);
+
+            StringBuilder resp = new StringBuilder();
+            resp.append("HTTP/1.1 ").append(code).append(" ").append(statusText(code)).append("\r\n");
+            resp.append("Content-Type: ").append(conn.getContentType()).append("\r\n");
+            resp.append("Accept-Ranges: bytes\r\n");
+            String cl = conn.getHeaderField("Content-Length");
+            if (cl != null) resp.append("Content-Length: ").append(cl).append("\r\n");
+            String cr = conn.getHeaderField("Content-Range");
+            if (cr != null) resp.append("Content-Range: ").append(cr).append("\r\n");
+            resp.append("Connection: close\r\n");
+            resp.append("X-Proxy: JellyfinTV-MultiThread\r\n");
+            resp.append("\r\n");
+            out.write(resp.toString().getBytes("ISO-8859-1"));
+            out.flush();
+
+            if (headOnly) {
+                upstreamIn.close();
+                conn.disconnect();
+                return;
+            }
+
+            // Multi-threaded streaming
+            final BlockingQueue<byte[]> queue = new ArrayBlockingQueue<byte[]>(QUEUE_CAPACITY);
+            final AtomicBoolean producerDone = new AtomicBoolean(false);
+            final AtomicBoolean producerError = new AtomicBoolean(false);
+
+            Thread producer = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    byte[] buf = new byte[CHUNK_SIZE];
+                    try {
+                        while (true) {
+                            int n = upstreamIn.read(buf);
+                            if (n < 0) break;
+                            byte[] chunk = new byte[n];
+                            System.arraycopy(buf, 0, chunk, 0, n);
+                            queue.put(chunk);
+                        }
+                    } catch (Exception e) {
+                        producerError.set(true);
+                    } finally {
+                        producerDone.set(true);
+                        try { queue.put(END_SENTINEL); } catch (Exception ignored) {}
+                        try { upstreamIn.close(); } catch (Exception ignored) {}
+                    }
+                }
+            });
+            producer.setDaemon(true);
+            producer.start();
+
+            try {
+                while (true) {
+                    byte[] chunk = queue.take();
+                    if (chunk.length == 0) break;
+                    out.write(chunk, 0, chunk.length);
+                    out.flush();
+                }
+            } catch (Exception e) {
+                // Client disconnected
+            }
+            try { producer.join(5000); } catch (Exception ignored) {}
+        } else {
+            sendSimple(out, String.valueOf(code), "text/plain", "upstream error");
+        }
+        conn.disconnect();
     }
 
     private String statusText(int code) {

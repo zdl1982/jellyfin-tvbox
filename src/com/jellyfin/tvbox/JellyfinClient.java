@@ -195,6 +195,11 @@ public class JellyfinClient {
      * Android 4's MediaPlayer cannot parse (it buffers forever). MPEG-TS is
      * a continuous stream format natively supported by Android 4's MediaPlayer.
      *
+     * However, Android 4's MediaPlayer also fails to play progressive MPEG-TS
+     * via HTTP (error 1/-1004). These URLs are STILL USED by the proxy's
+     * /stream route (for backward compatibility) but the main player now uses
+     * HLS (getHlsPlaylistUrl) for fluid and medium modes.
+     *
      * Also queries the default subtitle stream index and appends it to the
      * transcode URL so that subtitles are burned into the video.
      */
@@ -223,5 +228,51 @@ public class JellyfinClient {
     /** Medium mode: 720p transcode, medium bitrate (4 Mbps). */
     public String getMediumStreamUrl(String itemId) {
         return buildTranscodeUrl(itemId, 1280, 720, 4000000);
+    }
+
+    // ===== HLS (HTTP Live Streaming) =====
+    //
+    // Android 4's MediaPlayer supports HLS natively via the
+    // application/vnd.apple.mpegurl MIME type. Jellyfin's /main.m3u8
+    // endpoint returns a VOD playlist with 3-second TS segments.
+    //
+    // This avoids both the fragmented MP4 issue (fMP4 unparseable on
+    // Android 4) and the progressive MPEG-TS issue (error 1/-1004).
+    // The proxy rewrites the playlist URLs so all segments go through
+    // the local proxy (for HTTPS compatibility).
+
+    /**
+     * Build the shared HLS transcode parameters for a given quality setting.
+     * Returns the query-string portion (including the leading "&").
+     */
+    private String buildHlsTranscodeParams(int maxWidth, int maxHeight, int maxBitRate) {
+        String params = "&VideoCodec=h264&AudioCodec=aac"
+            + "&MaxWidth=" + maxWidth + "&MaxHeight=" + maxHeight
+            + "&MaxBitRate=" + maxBitRate
+            + "&Container=ts&SubtitleMethod=Encode&RequireAvc=true";
+        return params;
+    }
+
+    /**
+     * Build the HLS playlist URL (main.m3u8) for a given quality.
+     * The proxy will fetch this, rewrite the segment URLs, and serve it.
+     */
+    public String getHlsPlaylistUrl(String itemId, String quality) {
+        int maxWidth, maxHeight, maxBitRate;
+        if ("medium".equals(quality)) {
+            maxWidth = 1280; maxHeight = 720; maxBitRate = 4000000;
+        } else {
+            maxWidth = 854; maxHeight = 480; maxBitRate = 2000000;
+        }
+
+        String url = serverUrl + "/Videos/" + itemId + "/main.m3u8?api_key=" + token
+            + buildHlsTranscodeParams(maxWidth, maxHeight, maxBitRate);
+
+        // Query default subtitle track and append to URL
+        int subIdx = getDefaultSubtitleStreamIndex(itemId);
+        if (subIdx >= 0) {
+            url += "&SubtitleStreamIndex=" + subIdx;
+        }
+        return url;
     }
 }

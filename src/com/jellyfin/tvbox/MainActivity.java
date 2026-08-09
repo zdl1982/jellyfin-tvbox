@@ -144,18 +144,20 @@ public class MainActivity extends Activity {
         currentParentName = lib.getName();
         headerTitle.setText(lib.getName());
         libraryTitle.setText(lib.getName());
-        loadItems(lib.getId());
+        // Libraries and top-level folders: sort by name
+        loadItems(lib.getId(), "SortName");
     }
 
-    private void loadItems(String parentId) {
+    private void loadItems(String parentId, String sortBy) {
         setLoading(true);
         emptyText.setVisibility(View.GONE);
         final String pid = parentId;
+        final String sort = sortBy;
         new AsyncTask<Void, Void, List<MediaItem>>() {
             @Override
             protected List<MediaItem> doInBackground(Void... p) {
                 try {
-                    return client.getItems(pid);
+                    return client.getItems(pid, sort);
                 } catch (Exception e) {
                     return null;
                 }
@@ -187,7 +189,11 @@ public class MainActivity extends Activity {
             currentParentName = m.getName();
             headerTitle.setText(m.getName());
             libraryTitle.setText(m.getName());
-            loadItems(m.getId());
+            // A season contains episodes — sort by episode index, not name,
+            // so S01E02 comes before S01E10 (alphabetical order would put
+            // S01E10 before S01E2).
+            String sortBy = "Season".equals(type) ? "IndexNumber,ParentIndexNumber" : "SortName";
+            loadItems(m.getId(), sortBy);
         } else if ("Movie".equals(type) || "Episode".equals(type) ||
                    "Video".equals(type)) {
             // play it
@@ -218,15 +224,15 @@ public class MainActivity extends Activity {
     @Override
     public void onBackPressed() {
         // If we're nested in a folder, go back to top-level libraries
-        if (currentParentId != null && !currentParentId.equals(libraries.get(0).getId())) {
+        // NOTE: libraries may be empty if loading failed — guard against NPE
+        if (!libraries.isEmpty()
+            && currentParentId != null
+            && !currentParentId.equals(libraries.get(0).getId())) {
             headerTitle.setText("Jellyfin TV");
             libraryTitle.setText("媒体库");
             items.clear();
             adapter.notifyDataSetChanged();
-            // Reload first library
-            if (!libraries.isEmpty()) {
-                openLibrary(libraries.get(0));
-            }
+            openLibrary(libraries.get(0));
         } else {
             super.onBackPressed();
         }

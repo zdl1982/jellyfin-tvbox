@@ -116,8 +116,15 @@ public class JellyfinClient {
 
     /** Get items in a folder/library. */
     public List<MediaItem> getItems(String parentId) throws Exception {
+        return getItems(parentId, "SortName");
+    }
+
+    /** Get items in a folder/library with custom sort order.
+     *  @param sortBy Jellyfin sort field, e.g. "SortName", "IndexNumber,ParentIndexNumber"
+     */
+    public List<MediaItem> getItems(String parentId, String sortBy) throws Exception {
         String path = "/Users/" + userId + "/Items?ParentId=" + parentId +
-                      "&Fields=Overview,PrimaryImageAspectRatio&Recursive=false&SortBy=SortName";
+                      "&Fields=Overview,PrimaryImageAspectRatio&Recursive=false&SortBy=" + sortBy;
         String resp = http("GET", path, null, true);
         return parseItems(new JSONObject(resp));
     }
@@ -141,9 +148,13 @@ public class JellyfinClient {
             m.setOverview(o.optString("Overview", ""));
             m.setRuntimeTicks(o.optLong("RunTimeTicks", 0));
             m.setMediaType(o.optString("MediaType", ""));
-            if (o.optString("ImageTags").contains("Primary") ||
-                o.has("ImageTags") && o.getJSONObject("ImageTags").has("Primary")) {
-                m.setImageUrl(getPrimaryImageUrl(o.optString("Id")));
+            // ImageTags is a JSONObject like {"Primary": "…", "Thumb": "…"}.
+            // Check if it has a "Primary" key — the safe way is via optJSONObject.
+            if (o.has("ImageTags")) {
+                org.json.JSONObject tags = o.optJSONObject("ImageTags");
+                if (tags != null && tags.has("Primary")) {
+                    m.setImageUrl(getPrimaryImageUrl(o.optString("Id")));
+                }
             }
             list.add(m);
         }

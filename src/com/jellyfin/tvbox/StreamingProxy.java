@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -368,18 +369,31 @@ public class StreamingProxy {
                 public void run() {
                     byte[] buf = new byte[CHUNK_SIZE];
                     try {
-                        while (true) {
+                        while (!Thread.currentThread().isInterrupted()) {
                             int n = upstreamIn.read(buf);
                             if (n < 0) break;
                             byte[] chunk = new byte[n];
                             System.arraycopy(buf, 0, chunk, 0, n);
-                            queue.put(chunk);
+                            // Use offer with timeout instead of blocking put(), so
+                            // the producer won't hang forever if the consumer exits
+                            // (e.g. client disconnect). Returns false if queue full
+                            // after 1 second — re-check interrupt flag and retry.
+                            while (!queue.offer(chunk, 1, TimeUnit.SECONDS)) {
+                                if (Thread.currentThread().isInterrupted()) {
+                                    return; // consumer exited, bail out
+                                }
+                            }
                         }
+                    } catch (InterruptedException e) {
+                        // Interrupted by consumer exit — normal shutdown
+                        Thread.currentThread().interrupt();
                     } catch (Exception e) {
                         producerError.set(true);
                     } finally {
                         producerDone.set(true);
-                        try { queue.put(END_SENTINEL); } catch (Exception ignored) {}
+                        if (!Thread.currentThread().isInterrupted()) {
+                            try { queue.offer(END_SENTINEL, 1, TimeUnit.SECONDS); } catch (Exception ignored) {}
+                        }
                         try { upstreamIn.close(); } catch (Exception ignored) {}
                     }
                 }
@@ -395,7 +409,10 @@ public class StreamingProxy {
                     out.flush();
                 }
             } catch (Exception e) {
-                // Client disconnected
+                // Client disconnected or error — stop consuming and interrupt
+                // the producer so it doesn't block forever on a full queue,
+                // leaking the upstream Jellyfin transcode connection.
+                producer.interrupt();
             }
             try { producer.join(5000); } catch (Exception ignored) {}
         } else {

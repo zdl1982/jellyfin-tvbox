@@ -108,7 +108,7 @@ public class PlayerActivity extends Activity {
         switch (q) {
             case QUALITY_MEDIUM: return "中等模式 (720P)";
             case QUALITY_ORIGINAL: return "原画模式";
-            default: return "流畅模式 (480P)";
+            default: return "流畅模式 (540P)";
         }
     }
 

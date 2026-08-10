@@ -216,7 +216,7 @@ public class JellyfinClient {
     }
 
     /**
-     * Build a transcoded stream URL at a given target resolution/bitrate.
+     * Build a transcoded stream URL at a given target bitrate.
      *
      * NOTE: Uses Container=ts (MPEG-TS) instead of mp4 because Jellyfin's
      * live transcode with Container=mp4 outputs fragmented MP4 (fMP4) which
@@ -228,16 +228,20 @@ public class JellyfinClient {
      * /stream route (for backward compatibility) but the main player now uses
      * HLS (getHlsPlaylistUrl) for fluid and medium modes.
      *
+     * Uses videoBitRate instead of MaxWidth/MaxHeight/MaxBitRate because
+     * Jellyfin 12.0-rc4 on this server ignores resolution parameters and
+     * outputs fixed 416x... videoBitRate correctly controls output quality
+     * (500k→960x540, 2M→1280x720, 4M→1920x1080).
+     *
      * Also queries the default subtitle stream index and appends it to the
      * transcode URL so that subtitles are burned into the video.
      */
-    private String buildTranscodeUrl(String itemId, int maxWidth, int maxHeight, int maxBitRate) {
+    private String buildTranscodeUrl(String itemId, int videoBitRate) {
         // NOTE: do NOT use static=true here — it forces direct streaming of the
         // original file and ignores all transcode params.
         String url = serverUrl + "/Videos/" + itemId + "/stream?api_key=" + token
             + "&VideoCodec=h264&AudioCodec=aac"
-            + "&MaxWidth=" + maxWidth + "&MaxHeight=" + maxHeight
-            + "&MaxBitRate=" + maxBitRate
+            + "&videoBitRate=" + videoBitRate
             + "&Level=-1&Cabac=true&SubtitleMethod=Encode"
             + "&Container=ts";
         // Query default subtitle track and append to URL
@@ -248,14 +252,14 @@ public class JellyfinClient {
         return url;
     }
 
-    /** Fluid mode: 480p transcode, low bitrate (2 Mbps). */
+    /** Fluid mode: ~540p transcode, low bitrate (500k). */
     public String getFluidStreamUrl(String itemId) {
-        return buildTranscodeUrl(itemId, 854, 480, 2000000);
+        return buildTranscodeUrl(itemId, 500000);
     }
 
-    /** Medium mode: 720p transcode, medium bitrate (4 Mbps). */
+    /** Medium mode: 720p transcode, medium bitrate (2 Mbps). */
     public String getMediumStreamUrl(String itemId) {
-        return buildTranscodeUrl(itemId, 1280, 720, 4000000);
+        return buildTranscodeUrl(itemId, 2000000);
     }
 
     // ===== HLS (HTTP Live Streaming) =====
@@ -271,12 +275,13 @@ public class JellyfinClient {
 
     /**
      * Build the shared HLS transcode parameters for a given quality setting.
+     * Uses videoBitRate instead of MaxWidth/MaxHeight/MaxBitRate because
+     * Jellyfin 12.0-rc4 on this server ignores resolution parameters.
      * Returns the query-string portion (including the leading "&").
      */
-    private String buildHlsTranscodeParams(int maxWidth, int maxHeight, int maxBitRate) {
+    private String buildHlsTranscodeParams(int videoBitRate) {
         String params = "&VideoCodec=h264&AudioCodec=aac"
-            + "&MaxWidth=" + maxWidth + "&MaxHeight=" + maxHeight
-            + "&MaxBitRate=" + maxBitRate
+            + "&videoBitRate=" + videoBitRate
             + "&Container=ts&SubtitleMethod=Encode&RequireAvc=true";
         return params;
     }
@@ -286,15 +291,15 @@ public class JellyfinClient {
      * The proxy will fetch this, rewrite the segment URLs, and serve it.
      */
     public String getHlsPlaylistUrl(String itemId, String quality) {
-        int maxWidth, maxHeight, maxBitRate;
+        int videoBitRate;
         if ("medium".equals(quality)) {
-            maxWidth = 1280; maxHeight = 720; maxBitRate = 4000000;
+            videoBitRate = 2000000; // 2M → 720p
         } else {
-            maxWidth = 854; maxHeight = 480; maxBitRate = 2000000;
+            videoBitRate = 500000;  // 500k → ~540p
         }
 
         String url = serverUrl + "/Videos/" + itemId + "/main.m3u8?api_key=" + token
-            + buildHlsTranscodeParams(maxWidth, maxHeight, maxBitRate);
+            + buildHlsTranscodeParams(videoBitRate);
 
         // Query default subtitle track and append to URL
         int subIdx = getDefaultSubtitleStreamIndex(itemId);

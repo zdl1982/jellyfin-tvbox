@@ -225,7 +225,7 @@ public class StreamingProxy {
         conn.setConnectTimeout(20000);
         conn.setReadTimeout(30000);
         conn.setRequestProperty("Accept", "*/*");
-        conn.setRequestProperty("X-Emby-Token", jfClient.getToken());
+        conn.setRequestProperty("Authorization", "MediaBrowser Token=\"" + jfClient.getToken() + "\"");
         conn.setRequestProperty("User-Agent", "Jellyfin-TVBox/1.0");
 
         int code = conn.getResponseCode();
@@ -286,7 +286,7 @@ public class StreamingProxy {
         conn.setConnectTimeout(20000);
         conn.setReadTimeout(60000);
         conn.setRequestProperty("Accept", "*/*");
-        conn.setRequestProperty("X-Emby-Token", jfClient.getToken());
+        conn.setRequestProperty("Authorization", "MediaBrowser Token=\"" + jfClient.getToken() + "\"");
         conn.setRequestProperty("User-Agent", "Jellyfin-TVBox/1.0");
 
         int code = conn.getResponseCode();
@@ -326,7 +326,7 @@ public class StreamingProxy {
         conn.setConnectTimeout(20000);
         conn.setReadTimeout(120000);
         conn.setRequestProperty("Accept", "*/*");
-        conn.setRequestProperty("X-Emby-Token", jfClient.getToken());
+        conn.setRequestProperty("Authorization", "MediaBrowser Token=\"" + jfClient.getToken() + "\"");
         conn.setRequestProperty("User-Agent", "Jellyfin-TVBox/1.0");
 
         String range = headers.get("range");

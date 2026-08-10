@@ -79,9 +79,12 @@ public class JellyfinClient {
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(30000);
             conn.setRequestProperty("Accept", "application/json");
-            conn.setRequestProperty("X-Emby-Authorization", authHeader());
+            // Jellyfin 12.0.0+ disables legacy X-Emby-* headers by default.
+            // Use standard Authorization header instead.
             if (withToken && token != null) {
-                conn.setRequestProperty("X-Emby-Token", token);
+                conn.setRequestProperty("Authorization", "MediaBrowser Token=\"" + token + "\"");
+            } else {
+                conn.setRequestProperty("Authorization", authHeader());
             }
             if (body != null) {
                 conn.setRequestProperty("Content-Type", "application/json");

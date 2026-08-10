@@ -317,7 +317,7 @@ public class MainActivity extends Activity {
                 try {
                     conn.setConnectTimeout(10000);
                     conn.setReadTimeout(10000);
-                    conn.setRequestProperty("X-Emby-Token", client.getToken());
+                    conn.setRequestProperty("Authorization", "MediaBrowser Token=\"" + client.getToken() + "\"");
                     InputStream is = conn.getInputStream();
                     Bitmap bm = BitmapFactory.decodeStream(is);
                     is.close();

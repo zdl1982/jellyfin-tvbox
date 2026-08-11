@@ -283,7 +283,7 @@ public class JellyfinClient {
      * Returns the query-string portion (including the leading "&").
      */
     private String buildHlsTranscodeParams(int videoBitRate) {
-        String params = "&VideoCodec=h264&AudioCodec=aac"
+        String params = "?VideoCodec=h264&AudioCodec=aac"
             + "&videoBitRate=" + videoBitRate
             + "&Container=ts&SubtitleMethod=Encode&RequireAvc=true";
         return params;

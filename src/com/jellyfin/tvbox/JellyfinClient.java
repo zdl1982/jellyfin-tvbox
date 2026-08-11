@@ -301,8 +301,7 @@ public class JellyfinClient {
             videoBitRate = 500000;  // 500k → ~540p
         }
 
-        String url = serverUrl + "/Videos/" + itemId + "/main.m3u8?api_key=" + token
-            + buildHlsTranscodeParams(videoBitRate);
+        String url = serverUrl + "/Videos/" + itemId + "/main.m3u8" + buildHlsTranscodeParams(videoBitRate);
 
         // Query default subtitle track and append to URL
         int subIdx = getDefaultSubtitleStreamIndex(itemId);
